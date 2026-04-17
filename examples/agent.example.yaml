@@ -1,0 +1,42 @@
+# agent.yaml — Example meshctl-agent configuration
+# Place at /etc/meshctl/agent.yaml on each fat node.
+
+node_name: hk-core
+
+repo:
+  sources:
+    - type: git
+      url: "git@github.com:yourorg/mesh-configs.git"
+      branch: main
+      ssh_key: "/etc/meshctl/deploy_key"
+    - type: git
+      url: "git@gitlab.internal:yourorg/mesh-configs.git"
+      branch: main
+      ssh_key: "/etc/meshctl/deploy_key"
+    - type: http
+      url: "https://backup.example.com/mesh-configs/output/"
+      token_env: "MESHCTL_BACKUP_TOKEN"
+    - type: local
+      path: "/etc/meshctl/manual-configs/"
+
+  fetch_timeout: 30s
+  local_cache: "/etc/meshctl/cache/"
+
+config_sync_interval: 5m
+probe_interval: 30s
+probe_port: 9473
+bird_socket: "/var/run/bird/bird.ctl"
+bird_include_path: "/etc/bird/meshctl.conf"
+
+# Local secrets — NEVER commit these files, NEVER include them in the
+# config repo. Each fat node has its own private key; the PSK master is
+# shared across all fat nodes in the mesh (distribute out of band).
+private_key_file: "/etc/meshctl/wireguard.key"
+psk_master_file: "/etc/meshctl/psk-master.key"   # optional, omit to disable PSK
+
+# Health monitoring — agent writes a JSON health file for monitoring tools.
+# health_file: /var/run/meshctl/health.json       # default
+# health_addr: ":9474"                            # optional HTTP endpoint
+#   GET /health  — agent health (uptime, config age, NTP status)
+#   GET /peers   — per-peer latency, OSPF cost, band state
+# Query with: meshctl-agent status [--addr :9474]

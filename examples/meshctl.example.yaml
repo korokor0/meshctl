@@ -1,0 +1,134 @@
+# meshctl.yaml — Example mesh network inventory
+# Copy this to your config repo and fill in real values.
+
+global:
+  linklocal_v4_range: "169.254.0.0/16"
+  linklocal_v4_prefix_len: 31
+  wg_listen_port: 51820
+  wg_persistent_keepalive: 25
+  ospf_area: 0.0.0.0
+  ospf_hello: 10
+  ospf_dead: 40
+  probe_port: 9473
+  probe_interval: 30s
+  probe_timeout: 5s
+  probe_failure_threshold: 3
+  cost_bands:
+    - { up: 0ms,   down: 0ms,   cost: 20,   hold: 5 }
+    - { up: 4ms,   down: 2ms,   cost: 80,   hold: 5 }
+    - { up: 12ms,  down: 8ms,   cost: 160,  hold: 5 }
+    - { up: 30ms,  down: 20ms,  cost: 250,  hold: 5 }
+    - { up: 60ms,  down: 40ms,  cost: 350,  hold: 5 }
+    - { up: 100ms, down: 70ms,  cost: 480,  hold: 5 }
+    - { up: 160ms, down: 120ms, cost: 640,  hold: 5 }
+    - { up: 220ms, down: 180ms, cost: 840,  hold: 5 }
+    - { up: 300ms, down: 260ms, cost: 1100, hold: 5 }
+  penalty_cost: 65535
+  ewma_alpha: 0.3
+  output_dir: "./output"
+  # WireGuard interface name prefix. Full name: <prefix><peer> (lowercase, max 15 chars).
+  # wg_iface_prefix: igp-
+  # BIRD table names for OSPF routes. Pipe them to master in bird.conf.
+  # igp_table4: igptable4
+  # igp_table6: igptable6
+  psk_enabled: false
+  # Bandwidth-aware cost: links below threshold get multiplicative OSPF cost penalty.
+  # Uses Cisco-style auto-cost formula: penalty = reference/link_bw - reference/threshold.
+  # Applied as: cost = band_cost * (1000 + penalty*10) / 1000. penalty=20 → +20%.
+  # Nodes without explicit bandwidth default to bandwidth_threshold (no penalty).
+  # bandwidth_threshold: 300   # Mbps (default: 300)
+  # reference_bandwidth: 3000  # Mbps (default: 3000)
+
+nodes:
+  # Dual-stack: generator picks v6 or v4 per peer (prefers v6)
+  # node_id: deterministic per-node ID for address derivation.
+  # V4LL address = linklocal_v4_range base + node_id (e.g. 169.254.0.1)
+  # Fe80 address = fe80::127:<node_id> (assigned to ALL WG interfaces)
+  # If omitted, auto-assigned alphabetically starting from 1.
+  # Explicit IDs prevent address shifts when adding/removing nodes.
+
+  - name: hk-core
+    type: linux
+    node_id: 1
+    bandwidth: 10000          # Mbps. Omit to default to bandwidth_threshold (no penalty).
+    endpoint:
+      ipv4: "1.2.3.4"
+      ipv6: "2001:db8::1"
+    loopback: 10.200.255.1
+    announce:
+      - 192.168.1.0/24
+    pubkey: "REPLACE_WITH_REAL_PUBKEY_1="
+    underlay: {}              # prefsrc defaults to endpoint IPs
+
+  - name: hk-edge
+    type: routeros
+    node_id: 2
+    bandwidth: 100            # 100Mbps — below threshold, gets cost penalty
+    endpoint:
+      ipv6: "2001:db8::2"
+    loopback: 10.200.255.2
+    announce:
+      - 192.168.2.0/24
+    pubkey: "REPLACE_WITH_REAL_PUBKEY_2="
+    wg_listen_port: 13231
+    # wg_peer_port: fixed port that ALL peers use to listen for this node.
+    # Avoids port shifts when new nodes join. E.g. wg_peer_port: 60001 means
+    # every peer's igp-hk-edge interface listens on port 60001.
+    # wg_peer_port: 60001
+    cost_mode: static
+    static_cost: 150
+
+  # IPv4-only node
+  - name: jp-relay
+    type: linux
+    node_id: 3
+    endpoint:
+      ipv4: "198.51.100.5"
+    loopback: 10.200.255.3
+    pubkey: "REPLACE_WITH_REAL_PUBKEY_3="
+    underlay: {}
+
+  # Domain endpoint: domain is passed as-is to WireGuard.
+  # ipv4/ipv6 are used for endpoint selection and underlay routes.
+  # - name: us-west
+  #   type: linux
+  #   endpoint:
+  #     domain: "us-west.example.com"
+  #     ipv4: "203.0.113.50"
+  #     ipv6: "2001:db8:cafe::1"
+  #     ddns: false
+  #   loopback: 10.200.255.4
+  #   pubkey: "REPLACE_WITH_REAL_PUBKEY_5="
+  #   underlay: {}
+
+  - name: friend-node
+    type: static
+    node_id: 10
+    endpoint:
+      ipv4: "203.0.113.99"
+    loopback: 10.200.255.10
+    announce:
+      - 172.16.0.0/16
+    pubkey: "REPLACE_WITH_REAL_PUBKEY_4="
+    peers_with:
+      - hk-core
+      - jp-relay
+    cost_mode: probe
+    static_cost: 200
+
+  # Node behind NAT (no public IP).
+  # Must use peers_with to specify which nodes to connect to.
+  # The NAT node initiates the WireGuard connection; peers wait for it.
+  # persistent_keepalive keeps the tunnel alive through NAT.
+  # At least one side of each link must have a public endpoint.
+  # - name: home-node
+  #   type: linux
+  #   node_id: 20
+  #   loopback: 10.200.255.20
+  #   pubkey: "REPLACE_WITH_REAL_PUBKEY_NAT="
+  #   peers_with:
+  #     - hk-core
+  #     - jp-relay
+
+link_policy:
+  mode: full
