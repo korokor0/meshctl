@@ -1,0 +1,28 @@
+[Unit]
+Description=meshctl agent — WireGuard mesh config sync, probe, cost adjust
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/meshctl-agent --config /etc/meshctl/agent.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10
+
+# Security hardening
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+RuntimeDirectory=meshctl
+ReadWritePaths=/etc/meshctl /etc/bird
+PrivateTmp=yes
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshctl-agent
+
+[Install]
+WantedBy=multi-user.target
