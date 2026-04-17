@@ -1,0 +1,72 @@
+{
+  "node": "{{ .Node.Name }}",
+  "igp_table4": "{{ .IGPTable4 }}",
+  "igp_table6": "{{ .IGPTable6 }}",
+  {{- if .PSKRequired }}
+  "psk_required": true,
+  {{- end }}
+  "peers": [
+    {{- range $i, $p := .Peers }}
+    {{ if $i }},{{ end }}{
+      "name": "{{ $p.Name }}",
+      "public_key": "{{ $p.PublicKey }}",
+      {{- if $p.Endpoint }}
+      "endpoint": "{{ $p.Endpoint }}",
+      {{- end }}
+      "allowed_ips": [{{ range $j, $ip := $p.AllowedIPs }}{{ if $j }}, {{ end }}"{{ $ip }}"{{ end }}],
+      "persistent_keepalive": {{ $p.KeepAlive }},
+      "listen_port": {{ $p.ListenPort }},
+      "interface": "{{ ifaceName $p.Name }}",
+      "peer_type": "{{ $p.PeerType }}",
+      "cost_mode": "{{ $p.CostMode }}"
+      {{- if $p.Fe80IP }},
+      "fe80_address": "{{ $p.Fe80IP }}/64"
+      {{- end }}
+      {{- if $p.PeerFe80IP }},
+      "peer_fe80": "{{ $p.PeerFe80IP }}"
+      {{- end }}
+      {{- if $p.InterfaceIP }},
+      "address": "{{ $p.InterfaceIP }}",
+      "peer_address": "{{ $p.PeerIP }}"
+      {{- end }}
+      {{- if $p.StaticCost }},
+      "static_cost": {{ derefUint32 $p.StaticCost }}
+      {{- end }}
+      {{- if $p.BandwidthPenalty }},
+      "bandwidth_penalty": {{ $p.BandwidthPenalty }}
+      {{- end }}
+    }
+    {{- end }}
+  ]
+  {{- if .CostBands }},
+  "cost_bands": [
+    {{- range $i, $b := .CostBands }}
+    {{ if $i }},{{ end }}{"up_ms": {{ $b.Up }}, "down_ms": {{ $b.Down }}, "cost": {{ $b.Cost }}, "hold": {{ $b.Hold }}}
+    {{- end }}
+  ],
+  "penalty_cost": {{ .PenaltyCost }},
+  "ewma_alpha": {{ .EWMAAlpha }},
+  "fail_threshold": {{ .FailThreshold }}
+  {{- end }}
+  {{- if or .UnderlayRoutes4 .UnderlayRoutes6 }},
+  "underlay_routes": [
+    {{- $first := true }}
+    {{- range .UnderlayRoutes4 }}
+    {{ if not $first }},{{ end }}{{ $first = false }}{
+      "peer": "{{ .PeerName }}",
+      "dest": "{{ .Dest }}",
+      "prefsrc": "{{ .Prefsrc }}",
+      "family": "ipv4"
+    }
+    {{- end }}
+    {{- range .UnderlayRoutes6 }}
+    {{ if not $first }},{{ end }}{{ $first = false }}{
+      "peer": "{{ .PeerName }}",
+      "dest": "{{ .Dest }}",
+      "prefsrc": "{{ .Prefsrc }}",
+      "family": "ipv6"
+    }
+    {{- end }}
+  ]
+  {{- end }}
+}
