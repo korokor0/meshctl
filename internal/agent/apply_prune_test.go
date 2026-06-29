@@ -79,3 +79,31 @@ func TestPruneStaleInterfaces_NoStateFileNoop(t *testing.T) {
 	a.stateFile = ""
 	a.pruneStaleInterfaces(map[string]bool{"igp-a": true}) // must not panic
 }
+
+// TestApplyWireguard_SkipsUnmanaged verifies a peer flagged wg_unmanaged is not
+// configured (no shelling out to ip/wg) and is never recorded as an
+// agent-managed interface, so the prune reconciler will never delete it.
+func TestApplyWireguard_SkipsUnmanaged(t *testing.T) {
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "wireguard.key")
+	if err := os.WriteFile(keyFile, []byte("dummy-key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wg := `{"node":"HKG","peers":[{"name":"bohouse","public_key":"k=",` +
+		`"interface":"igpc-bohouse","unmanaged":true,"peer_type":"routeros"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "wireguard.json"), []byte(wg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := &Applier{
+		logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		privateKeyFile: keyFile,
+		stateFile:      filepath.Join(dir, "managed-ifaces.json"),
+	}
+	if err := a.applyWireguard(dir); err != nil {
+		t.Fatalf("applyWireguard: %v", err)
+	}
+	if got := a.readManagedIfaces(); len(got) != 0 {
+		t.Errorf("unmanaged interface must not be tracked as agent-managed; got %v", got)
+	}
+}

@@ -147,6 +147,18 @@ type Node struct {
 	// The override is purely local to this node; the peer's own interface
 	// name is unaffected (WireGuard interface names are local).
 	WGIfaceOverride map[string]string `yaml:"wg_iface_override"`
+
+	// WGUnmanaged marks this node's WireGuard tunnel(s) as operator-managed.
+	// meshctl still generates OSPF/peering for it (so it joins the mesh and is
+	// probed for cost), but neither a fat peer's agent nor this node's own
+	// generated scripts touch the WireGuard layer — interface creation, keys,
+	// listen port, endpoint, PSK, and addresses are left to the operator. Use
+	// it to fold a pre-existing, hand-built tunnel into the mesh without the
+	// agent clobbering its special setup (NAT endpoint, hand-set PSK, etc.).
+	// Pair with the peer's wg_iface_override so OSPF targets the real interface.
+	// The operator is responsible for the interface's V4LL/fe80 addresses
+	// matching meshctl's derivation, or OSPF nexthops won't resolve.
+	WGUnmanaged bool `yaml:"wg_unmanaged,omitempty"`
 }
 
 // EndpointDef describes how to reach a node on the underlay network.

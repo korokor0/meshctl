@@ -64,6 +64,7 @@ type WGPeer struct {
 	CostMode            string   `json:"cost_mode,omitempty"`
 	StaticCost          *uint32  `json:"static_cost,omitempty"`
 	BandwidthPenalty    uint32   `json:"bandwidth_penalty,omitempty"`
+	Unmanaged           bool     `json:"unmanaged,omitempty"` // operator-managed WG: OSPF + probe only
 }
 
 // Applier applies fetched configuration to the local system.
@@ -148,6 +149,15 @@ func (a *Applier) applyWireguard(configDir string) error {
 	var failCount int
 	desired := make(map[string]bool, len(wgCfg.Peers))
 	for _, peer := range wgCfg.Peers {
+		// Operator-managed tunnel: meshctl runs OSPF + probing over this
+		// interface (handled elsewhere) but never touches the WG layer or
+		// prunes it. Skip it here, and keep it out of the desired set so the
+		// prune reconciler never considers it a candidate.
+		if peer.Unmanaged {
+			a.logger.Info("peer WireGuard is operator-managed (wg_unmanaged), skipping WG apply",
+				"peer", peer.Name, "interface", peer.Interface)
+			continue
+		}
 		if peer.Interface != "" {
 			desired[peer.Interface] = true
 		}

@@ -16,7 +16,7 @@ The system manages heterogeneous nodes: Linux servers (Debian/systemd), MikroTik
 
 3. **Config generation over remote control.** Only Linux fat nodes run a live agent. All other nodes receive generated scripts applied manually.
 
-4. **Link-local first, with fallback.** Tunnel interfaces prefer `fe80::` link-local with OSPFv3 AF. Where not supported (RouterOS lacks RFC 5838), fall back to `169.254.x.x` PTP + OSPFv2. All WG interfaces get a `fe80::127:<node_id>/64` address regardless of link mode.
+4. **Link-local first, with per-family fallback.** All WG interfaces get a `fe80::127:<node_id>/64` address regardless of link mode, and **IPv6 always rides native OSPFv3 over that fe80** — for every link, including RouterOS/static peers (native OSPFv3 is universal). Only **IPv4** splits: Linux↔Linux uses OSPFv3 IPv4 AF (RFC 5838) over fe80; any link to a peer lacking RFC 5838 (RouterOS) falls back to `169.254.x.x` PTP + OSPFv2. So a RouterOS link carries IPv4 via OSPFv2 and IPv6 via native OSPFv3 simultaneously.
 
 5. **One-way delay, not RTT.** OSPF cost is per-interface outbound. The A→B path may differ from B→A. Each agent measures the forward one-way delay to each peer and uses that for its own cost decision. Agents exchange NTP-synced timestamps via a lightweight UDP probe protocol.
 
@@ -353,11 +353,11 @@ Each node has a `node_id` (integer, explicit or auto-assigned alphabetically). A
 - **V4LL**: `linklocal_v4_range` base + `node_id`. E.g. base `169.254.0.0` + node_id `2` = `169.254.0.2`. PTP format on wire: `ip addr replace 169.254.0.4 peer 169.254.0.2/32 dev igp-hkg`
 - **Fe80**: `fe80::127:<node_id>` assigned to ALL WG interfaces (both fe80 and V4LL mode). Uses `ip -6 addr replace` for idempotency.
 
-**Mode 1: IPv6 link-local only (preferred)** — Linux-to-Linux links only. `fe80::127:<node_id>/64` + OSPFv3 AF (RFC 5838).
+**Mode 1: IPv6 link-local only (preferred)** — Linux-to-Linux links only. `fe80::127:<node_id>/64` + OSPFv3 IPv4 AF (RFC 5838) for IPv4.
 
-**Mode 2: 169.254.x.x PTP + OSPFv2 (fallback)** — Any link involving RouterOS or static node. Both V4LL PTP and fe80 addresses are assigned.
+**Mode 2: 169.254.x.x PTP + OSPFv2 (fallback)** — Any link involving RouterOS or static node. Both V4LL PTP and fe80 addresses are assigned. The V4LL/OSPFv2 fallback is **IPv4-only**.
 
-Selection: both endpoints Linux → mode 1; otherwise → mode 2. A Linux node can have both modes simultaneously (BIRD runs OSPFv3 AF + OSPFv2 instances, same kernel table).
+The mode selects how **IPv4** is carried (both endpoints Linux → mode 1; otherwise → mode 2). **IPv6 is mode-independent**: every link — both modes — carries IPv6 via native OSPFv3 over its fe80 address, since RouterOS and static peers speak native OSPFv3 (the RFC 5838 limitation only affects the IPv4 AF). So BIRD on a fat node runs up to three OSPF instances against the same kernel table: `meshctl_ospf3_v4` (IPv4 AF, fe80 links), `meshctl_ospf3_v6` (native IPv6, **all** links), and `meshctl_ospf2` (IPv4, V4LL links).
 
 ### Loopback addressing
 
@@ -608,7 +608,16 @@ Three independent loops:
       Git sources use `fetch --depth 1` + `reset --hard` (handles force pushes)
    b. On success: update local cache, read output/<my-node-name>/
    c. On all-fail: log warning, use cached config, skip apply
-   d. Diff WG peers, apply adds/removes/updates via netlink
+   d. Diff WG peers, apply adds/removes/updates via netlink. Peers whose node
+      has `wg_unmanaged: true` are skipped entirely at the WG layer — the agent
+      neither creates/configures nor prunes their interface (the tunnel is
+      operator-built), but it still runs OSPF and probing over it. Used to fold
+      a pre-existing, hand-built tunnel into the mesh without clobbering its
+      special setup; pair with the peer's `wg_iface_override` so OSPF targets
+      the real interface. For an unmanaged peer the generator omits `peer_fe80`
+      from wireguard.json so probing uses the V4LL `peer_address` (which the
+      operator aligns to meshctl's derivation) rather than a scheme fe80 the
+      operator's interface may not carry.
    e. Reconcile interfaces: delete WG interfaces the agent previously created
       that are no longer in the config (peer removed, or interface renamed via
       `wg_iface_override`). The agent tracks its own interfaces in a node-local
@@ -677,7 +686,7 @@ include "/etc/bird/meshctl-underlay.conf";  # agent-managed (underlay static rou
 include "/etc/bird/bgp.conf";               # operator-managed
 ```
 
-`meshctl.conf` declares `igptable4`/`igptable6` and contains OSPFv3 AF (fe80 links) + OSPFv2 (169.254 links) importing/exporting to those tables. The operator pipes them to master4/master6 in `bird.conf`. Table names are configurable via `global.igp_table4`/`igp_table6` (defaults: `igptable4`, `igptable6`). Agent rewrites on config sync or cost band change. `birdc configure` is graceful.
+`meshctl.conf` declares `igptable4`/`igptable6` and contains OSPFv3 IPv4 AF (fe80 links) + native OSPFv3 IPv6 (all links) + OSPFv2 (169.254 links, IPv4) importing/exporting to those tables. The operator pipes them to master4/master6 in `bird.conf`. Table names are configurable via `global.igp_table4`/`igp_table6` (defaults: `igptable4`, `igptable6`). Agent rewrites on config sync or cost band change. `birdc configure` is graceful.
 
 `meshctl-underlay.conf` contains `protocol static meshctl_underlay4/6` blocks for underlay routes with `krt_prefsrc`. These target master4/master6 directly since they need to be installed in the kernel FIB via `protocol kernel`.
 
@@ -759,7 +768,7 @@ Domain endpoints are passed as-is to WireGuard (WireGuard resolves them). The `i
 
 ## RouterOS .rsc design
 
-Idempotent scripts with check-before-add. OSPF interface-templates remove+recreate for cost updates. See full example in previous sections.
+Idempotent scripts with check-before-add. OSPF is dual-stack: the generator creates two meshctl-owned instances — `meshctl-v2` (version 2, IPv4 over the 169.254 PTP addresses) and `meshctl-v3` (version 3, native IPv6 over the interface's fe80 link-local) — plus their backbone areas, all idempotent (so re-imports don't flap adjacencies). Each peer link gets one interface-template per family (the v6 one tagged with a `-v6` comment suffix). Instances/areas/templates are tagged with a `meshctl` comment; interface-templates are removed+recreated on each import so cost/timer changes take effect, while operator-managed OSPF is never touched. See full example in previous sections.
 
 No gRPC. No protobuf. No CGO. Cross-compiles for linux/amd64, linux/arm64. Dependencies in `go.mod`. Build, deploy and day-to-day workflow instructions are in `README.md`.
 

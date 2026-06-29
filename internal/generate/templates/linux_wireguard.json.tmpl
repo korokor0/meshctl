@@ -19,10 +19,13 @@
       "interface": "{{ $p.Interface }}",
       "peer_type": "{{ $p.PeerType }}",
       "cost_mode": "{{ $p.CostMode }}"
+      {{- if $p.Unmanaged }},
+      "unmanaged": true
+      {{- end }}
       {{- if $p.Fe80IP }},
       "fe80_address": "{{ $p.Fe80IP }}/64"
       {{- end }}
-      {{- if $p.PeerFe80IP }},
+      {{- if and $p.PeerFe80IP (not $p.Unmanaged) }},
       "peer_fe80": "{{ $p.PeerFe80IP }}"
       {{- end }}
       {{- if $p.InterfaceIP }},

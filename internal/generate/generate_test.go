@@ -87,7 +87,7 @@ func TestBIRDGenerator_GenerateOSPF(t *testing.T) {
 		t.Error("expected OSPFv3 IPv4 AF block for fe80 links")
 	}
 	if !strings.Contains(s, "meshctl_ospf3_v6") {
-		t.Error("expected OSPFv3 IPv6 AF block for fe80 links")
+		t.Error("expected native OSPFv3 IPv6 block")
 	}
 	if !strings.Contains(s, "instance id 64") {
 		t.Error("expected instance id 64 for OSPFv3 IPv4 AF")
@@ -103,6 +103,70 @@ func TestBIRDGenerator_GenerateOSPF(t *testing.T) {
 	}
 	if !strings.Contains(s, "igp-jp-relay") {
 		t.Error("expected igp-jp-relay interface")
+	}
+}
+
+// TestBIRDGenerator_IPv6OverV4LL verifies that a Linux node whose only peer is
+// a RouterOS node (a V4LL link, no fe80 links) still gets IPv6 routing: the
+// IPv4 AF instance is absent, IPv4 rides OSPFv2, and IPv6 rides a native
+// OSPFv3 instance that includes the V4LL peer's interface.
+func TestBIRDGenerator_IPv6OverV4LL(t *testing.T) {
+	cfg := &config.Config{
+		Global: config.Global{
+			LinkLocalV4Range:   "169.254.0.0/16",
+			LinkLocalV4PrefLen: 31,
+			WGListenPort:       51820,
+			OSPFArea:           "0.0.0.0",
+			OSPFHello:          10,
+			OSPFDead:           40,
+			WGIfacePrefix:      "igp-",
+			IGPTable4:          "igptable4",
+			IGPTable6:          "igptable6",
+		},
+		Nodes: []config.Node{
+			{Name: "lx", Type: config.NodeTypeLinux, Endpoint: config.EndpointDef{IPv4: "1.2.3.4"},
+				Loopback: "10.200.255.1", PubKey: "k1=", NodeID: 1},
+			{Name: "ros", Type: config.NodeTypeRouterOS, Endpoint: config.EndpointDef{IPv4: "5.6.7.8"},
+				Loopback: "10.200.255.2", PubKey: "k2=", NodeID: 2},
+		},
+		LinkPolicy: config.LinkPolicy{Mode: "full"},
+	}
+	links, err := mesh.ComputeLinks(cfg)
+	if err != nil {
+		t.Fatalf("compute links: %v", err)
+	}
+	mesh.AssignAddresses(links, cfg)
+
+	gen, err := NewBIRDGenerator(cfg)
+	if err != nil {
+		t.Fatalf("new generator: %v", err)
+	}
+	out, err := gen.GenerateOSPF(cfg.NodeByName("lx"), links)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	s := string(out)
+
+	// No fe80 links → no OSPFv3 IPv4 AF instance.
+	if strings.Contains(s, "meshctl_ospf3_v4") {
+		t.Error("did not expect OSPFv3 IPv4 AF block (no fe80 links)")
+	}
+	// IPv4 over the V4LL link rides OSPFv2.
+	if !strings.Contains(s, "meshctl_ospf2") {
+		t.Error("expected OSPFv2 block for the V4LL link")
+	}
+	// IPv6 must still run — native OSPFv3, the fix.
+	if !strings.Contains(s, "meshctl_ospf3_v6") {
+		t.Fatal("expected native OSPFv3 IPv6 block over the V4LL link")
+	}
+	// The RouterOS peer's interface must appear inside the IPv6 instance,
+	// not just in OSPFv2. Isolate the v6 block (it precedes meshctl_ospf2).
+	v6 := s[strings.Index(s, "meshctl_ospf3_v6"):]
+	if i := strings.Index(v6, "meshctl_ospf2"); i >= 0 {
+		v6 = v6[:i]
+	}
+	if !strings.Contains(v6, `interface "igp-ros"`) {
+		t.Errorf("IPv6 OSPFv3 block missing the V4LL peer interface; got:\n%s", v6)
 	}
 }
 
@@ -151,6 +215,111 @@ func TestRouterOSGenerator_GenerateFull(t *testing.T) {
 	}
 	if !strings.Contains(s, "ospf") {
 		t.Error("expected ospf section")
+	}
+}
+
+// TestWGUnmanaged_Flows verifies wg_unmanaged threads through generation:
+// the peer is flagged in wireguard.json, OSPF still covers it, and the
+// unmanaged node's own RouterOS script emits no WireGuard config.
+func TestWGUnmanaged_Flows(t *testing.T) {
+	cfg := testCfg()
+	for i := range cfg.Nodes {
+		if cfg.Nodes[i].Name == "hk-edge" {
+			cfg.Nodes[i].WGUnmanaged = true
+		}
+	}
+	links, _ := mesh.ComputeLinks(cfg)
+	mesh.AssignAddresses(links, cfg)
+
+	// The hk-edge peer (seen from hk-core) must be flagged Unmanaged.
+	peers := BuildWGPeers(cfg, "hk-core", links)
+	var found bool
+	for _, p := range peers {
+		if p.Name == "hk-edge" {
+			found = true
+			if !p.Unmanaged {
+				t.Error("hk-edge peer should be Unmanaged")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("hk-edge peer missing from hk-core")
+	}
+
+	gen, err := NewBIRDGenerator(cfg)
+	if err != nil {
+		t.Fatalf("new generator: %v", err)
+	}
+	node := cfg.NodeByName("hk-core")
+
+	// wireguard.json carries the unmanaged flag for hk-edge.
+	wgOut, err := gen.GenerateWireguard(node, peers)
+	if err != nil {
+		t.Fatalf("generate wg: %v", err)
+	}
+	if !strings.Contains(string(wgOut), `"unmanaged": true`) {
+		t.Errorf("wireguard.json missing unmanaged flag; got:\n%s", wgOut)
+	}
+
+	// OSPF still covers the unmanaged peer's interface (unmanaged = WG only).
+	ospf, err := gen.GenerateOSPF(node, links)
+	if err != nil {
+		t.Fatalf("generate ospf: %v", err)
+	}
+	if !strings.Contains(string(ospf), "igp-hk-edge") {
+		t.Error("OSPF should still cover the unmanaged peer's interface")
+	}
+
+	// The unmanaged RouterOS node emits no WireGuard config of its own.
+	ros := NewRouterOSGenerator(cfg)
+	edge := cfg.NodeByName("hk-edge")
+	edgeWG, err := ros.GenerateWireguard(edge, BuildWGPeers(cfg, "hk-edge", links))
+	if err != nil {
+		t.Fatalf("routeros wg: %v", err)
+	}
+	if strings.Contains(string(edgeWG), "/interface/wireguard/add") {
+		t.Errorf("unmanaged RouterOS node should emit no WG add; got:\n%s", edgeWG)
+	}
+	if !strings.Contains(string(edgeWG), "wg_unmanaged") {
+		t.Error("expected wg_unmanaged note in RouterOS WG output")
+	}
+}
+
+// TestRouterOSGenerator_DualStackOSPF verifies the RouterOS OSPF script
+// declares both a version=2 instance (IPv4) and a version=3 instance (IPv6),
+// and that every V4LL peer gets an interface-template in each family.
+func TestRouterOSGenerator_DualStackOSPF(t *testing.T) {
+	cfg := testCfg()
+	links, _ := mesh.ComputeLinks(cfg)
+	mesh.AssignAddresses(links, cfg)
+
+	gen := NewRouterOSGenerator(cfg)
+	node := cfg.NodeByName("hk-edge")
+	out, err := gen.GenerateOSPF(node, links)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	s := string(out)
+
+	if !strings.Contains(s, "version=2") {
+		t.Error("expected OSPFv2 instance (version=2) for IPv4")
+	}
+	if !strings.Contains(s, "version=3") {
+		t.Error("expected OSPFv3 instance (version=3) for IPv6")
+	}
+	if !strings.Contains(s, "meshctl-v3-backbone") {
+		t.Error("expected IPv6 backbone area reference")
+	}
+	// router-id should be the node's loopback.
+	if !strings.Contains(s, "router-id="+node.Loopback) {
+		t.Errorf("expected router-id=%s", node.Loopback)
+	}
+	// hk-edge peers with hk-core (V4LL): expect both a v4 and a v6 template.
+	if !strings.Contains(s, `comment="meshctl-hk-core"`) {
+		t.Error("expected IPv4 interface-template for peer hk-core")
+	}
+	if !strings.Contains(s, `comment="meshctl-hk-core-v6"`) {
+		t.Error("expected IPv6 interface-template for peer hk-core")
 	}
 }
 

@@ -24,7 +24,12 @@ func (g *StaticSnippetGenerator) GenerateWireguard(node *config.Node, peers []WG
 	var buf bytes.Buffer
 
 	fmt.Fprintf(&buf, "# WireGuard reference configuration for %s (static node)\n", node.Name)
-	fmt.Fprintf(&buf, "# Adapt this to your platform's WireGuard configuration format.\n\n")
+	fmt.Fprintf(&buf, "# Adapt this to your platform's WireGuard configuration format.\n")
+	if node.WGUnmanaged {
+		fmt.Fprintf(&buf, "# wg_unmanaged: this tunnel is operator-managed; the snippet below is for\n")
+		fmt.Fprintf(&buf, "# reference only — meshctl applies nothing to the WireGuard layer here.\n")
+	}
+	fmt.Fprintf(&buf, "\n")
 
 	for _, p := range peers {
 		iface := p.Interface
@@ -68,10 +73,10 @@ func (g *StaticSnippetGenerator) GenerateOSPF(node *config.Node, links []mesh.Li
 		if l.Mode == mesh.LinkModeV4LL {
 			selfAddr := l.SelfAddr(node.Name)
 			peerAddr := l.PeerAddr(node.Name)
-			fmt.Fprintf(&buf, "#   Local:  %s\n", selfAddr)
-			fmt.Fprintf(&buf, "#   Remote: %s\n", peerAddr.Addr())
+			fmt.Fprintf(&buf, "#   IPv4 (OSPFv2):  local %s, remote %s\n", selfAddr, peerAddr.Addr())
+			fmt.Fprintf(&buf, "#   IPv6 (OSPFv3):  native OSPFv3 over fe80 link-local %s/64\n", mesh.Fe80ForNode(node.NodeID))
 		} else {
-			fmt.Fprintf(&buf, "#   Mode: IPv6 link-local (fe80::)\n")
+			fmt.Fprintf(&buf, "#   IPv4 (OSPFv3 AF) + IPv6 (OSPFv3): fe80 link-local %s/64\n", mesh.Fe80ForNode(node.NodeID))
 		}
 		fmt.Fprintf(&buf, "\n")
 	}

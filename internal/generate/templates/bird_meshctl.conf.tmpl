@@ -10,7 +10,8 @@ protocol static meshctl_lo4 {
 
 {{ if .Fe80Links -}}
 # OSPFv3 IPv4 AF (RFC 5838) — fe80 neighbor sessions, carries IPv4 routes.
-# Instance ID 64 per RFC 5838 §2.1 (IPv4 unicast AF).
+# Instance ID 64 per RFC 5838 §2.1 (IPv4 unicast AF). Linux<->Linux only:
+# RouterOS lacks RFC 5838, so its IPv4 routes ride OSPFv2 (meshctl_ospf2) below.
 # Requires 169.254.x.x PTP addresses on interfaces for IPv4 nexthop resolution.
 protocol ospf v3 meshctl_ospf3_v4 {
     ipv4 {
@@ -30,8 +31,14 @@ protocol ospf v3 meshctl_ospf3_v4 {
         {{- end }}
     };
 }
+{{ end -}}
 
-# OSPFv3 IPv6 AF — fe80 neighbor sessions, carries IPv6 routes.
+{{ if .Links -}}
+# OSPFv3 IPv6 (native) — fe80 neighbor sessions, carries IPv6 routes.
+# Runs over ALL links: every WG interface has an fe80::127:<id> address and
+# native OSPFv3 is universal (RFC 5838 only limits the IPv4 AF instance above).
+# RouterOS and static peers therefore get IPv6 over the same tunnels whose
+# IPv4 rides OSPFv2.
 protocol ospf v3 meshctl_ospf3_v6 {
     ipv6 {
         table {{ .Global.IGPTable6 }};
@@ -39,7 +46,7 @@ protocol ospf v3 meshctl_ospf3_v6 {
         export all;
     };
     area {{ .Global.OSPFArea }} {
-        {{- range .Fe80Links }}
+        {{- range .Links }}
         interface "{{ peerIface $.PeerIfaces (.PeerName $.Node.Name) }}" {
             type pointopoint;
             hello {{ $.Global.OSPFHello }};
@@ -52,7 +59,8 @@ protocol ospf v3 meshctl_ospf3_v6 {
 {{ end -}}
 
 {{ if .V4LLLinks -}}
-# OSPFv2 for 169.254.x.x links (RouterOS / static peers)
+# OSPFv2 for 169.254.x.x links (RouterOS / static peers) — IPv4 only.
+# IPv6 for these same links rides meshctl_ospf3_v6 (native OSPFv3) above.
 protocol ospf v2 meshctl_ospf2 {
     ipv4 {
         table {{ .Global.IGPTable4 }};

@@ -29,6 +29,7 @@ type WGPeerConfig struct {
 	CostMode         config.CostMode // how the fat node determines cost for this peer
 	StaticCost       *uint32         // fixed cost (when cost_mode=static, or fallback)
 	BandwidthPenalty uint32          // additive OSPF cost for low-bandwidth links
+	Unmanaged        bool            // WG interface is operator-managed: OSPF + probe only, no WG apply
 }
 
 // ConfigGenerator produces platform-specific config files.
@@ -177,6 +178,7 @@ func BuildWGPeers(cfg *config.Config, nodeName string, links []mesh.Link) []WGPe
 			CostMode:         peerNode.EffectiveCostMode(),
 			StaticCost:       peerNode.StaticCost,
 			BandwidthPenalty: bwPenalty,
+			Unmanaged:        peerNode.WGUnmanaged,
 		}
 
 		// All links get V4LL addresses (OSPFv3 IPv4 AF needs IPv4 nexthop).
