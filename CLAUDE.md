@@ -609,7 +609,13 @@ Three independent loops:
    b. On success: update local cache, read output/<my-node-name>/
    c. On all-fail: log warning, use cached config, skip apply
    d. Diff WG peers, apply adds/removes/updates via netlink
-   e. Write BIRD include if changed, birdc configure
+   e. Reconcile interfaces: delete WG interfaces the agent previously created
+      that are no longer in the config (peer removed, or interface renamed via
+      `wg_iface_override`). The agent tracks its own interfaces in a node-local
+      state file (`managed-ifaces.json`, beside the private key); only names it
+      recorded are prune candidates, so operator-managed interfaces are never
+      touched. A missing/corrupt state file is treated as empty (no prune).
+   f. Write BIRD include if changed, birdc configure
 
 2. PROBE (every probe_interval, default 30s):
    For each peer:

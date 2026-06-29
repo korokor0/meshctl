@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/honoka/meshctl/internal/bird"
@@ -48,21 +49,21 @@ type WireguardConfig struct {
 
 // WGPeer describes a single WireGuard peer from the generated config.
 type WGPeer struct {
-	Name               string   `json:"name"`
-	PublicKey          string   `json:"public_key"`
-	Endpoint           string   `json:"endpoint"`
-	AllowedIPs         []string `json:"allowed_ips"`
-	PersistentKeepalive int    `json:"persistent_keepalive"`
-	ListenPort         int      `json:"listen_port"`
-	Interface          string   `json:"interface"`
-	Address            string   `json:"address,omitempty"`      // V4LL local addr (e.g. "169.254.0.4")
-	PeerAddress        string   `json:"peer_address,omitempty"` // V4LL peer addr (e.g. "169.254.0.2")
-	Fe80Address        string   `json:"fe80_address,omitempty"` // fe80 local addr (e.g. "fe80::127:4/64")
-	PeerFe80           string   `json:"peer_fe80,omitempty"`    // peer's fe80 addr (e.g. "fe80::127:3")
-	PeerType           string   `json:"peer_type,omitempty"`
-	CostMode           string   `json:"cost_mode,omitempty"`
-	StaticCost         *uint32  `json:"static_cost,omitempty"`
-	BandwidthPenalty   uint32   `json:"bandwidth_penalty,omitempty"`
+	Name                string   `json:"name"`
+	PublicKey           string   `json:"public_key"`
+	Endpoint            string   `json:"endpoint"`
+	AllowedIPs          []string `json:"allowed_ips"`
+	PersistentKeepalive int      `json:"persistent_keepalive"`
+	ListenPort          int      `json:"listen_port"`
+	Interface           string   `json:"interface"`
+	Address             string   `json:"address,omitempty"`      // V4LL local addr (e.g. "169.254.0.4")
+	PeerAddress         string   `json:"peer_address,omitempty"` // V4LL peer addr (e.g. "169.254.0.2")
+	Fe80Address         string   `json:"fe80_address,omitempty"` // fe80 local addr (e.g. "fe80::127:4/64")
+	PeerFe80            string   `json:"peer_fe80,omitempty"`    // peer's fe80 addr (e.g. "fe80::127:3")
+	PeerType            string   `json:"peer_type,omitempty"`
+	CostMode            string   `json:"cost_mode,omitempty"`
+	StaticCost          *uint32  `json:"static_cost,omitempty"`
+	BandwidthPenalty    uint32   `json:"bandwidth_penalty,omitempty"`
 }
 
 // Applier applies fetched configuration to the local system.
@@ -73,6 +74,11 @@ type Applier struct {
 	pskMasterFile  string
 	nodeName       string
 	logger         *slog.Logger
+
+	// stateFile records the WireGuard interfaces this agent created, so it can
+	// prune ones that later leave the config without touching interfaces it
+	// never created (operator-managed). Defaults next to the private key.
+	stateFile string
 }
 
 // NewApplier creates a config applier.
@@ -84,6 +90,7 @@ func NewApplier(birdSocket, birdInclude, privateKeyFile, pskMasterFile, nodeName
 		pskMasterFile:  pskMasterFile,
 		nodeName:       nodeName,
 		logger:         logger,
+		stateFile:      filepath.Join(filepath.Dir(privateKeyFile), "managed-ifaces.json"),
 	}
 }
 
@@ -139,7 +146,11 @@ func (a *Applier) applyWireguard(configDir string) error {
 	}
 
 	var failCount int
+	desired := make(map[string]bool, len(wgCfg.Peers))
 	for _, peer := range wgCfg.Peers {
+		if peer.Interface != "" {
+			desired[peer.Interface] = true
+		}
 		listenPort := peer.ListenPort
 		if listenPort == 0 {
 			listenPort = wgCfg.ListenPort // fallback for old config format
@@ -150,10 +161,89 @@ func (a *Applier) applyWireguard(configDir string) error {
 			failCount++
 		}
 	}
+
+	// Reconcile: remove WG interfaces this agent previously managed that are
+	// no longer in the config (e.g. a peer was removed, or its interface was
+	// renamed via wg_iface_override). Operator-managed interfaces are never
+	// candidates — only names the agent itself recorded.
+	a.pruneStaleInterfaces(desired)
+
 	if failCount > 0 && failCount == len(wgCfg.Peers) {
 		return fmt.Errorf("all %d WireGuard peers failed to configure", failCount)
 	}
 	return nil
+}
+
+// managedIfaceState is the on-disk record of WireGuard interfaces the agent
+// created. It is the sole source of prune candidates, so interfaces the agent
+// never created are never deleted.
+type managedIfaceState struct {
+	Interfaces []string `json:"interfaces"`
+}
+
+// pruneStaleInterfaces deletes WireGuard interfaces recorded in the agent's
+// state file that are absent from desired, then rewrites the state file to
+// desired. A missing or corrupt state file is treated as empty (no prune),
+// so the worst case is a leaked interface, never a wrongful deletion. Each
+// candidate is re-checked with `wg show` before deletion: if the name no
+// longer refers to a WireGuard interface (gone, or repurposed by the
+// operator), it is left untouched.
+func (a *Applier) pruneStaleInterfaces(desired map[string]bool) {
+	if a.stateFile == "" {
+		return
+	}
+	for _, name := range a.readManagedIfaces() {
+		if desired[name] {
+			continue
+		}
+		if err := exec.Command("wg", "show", name).Run(); err != nil {
+			// Not a WireGuard interface anymore (deleted or repurposed) — skip.
+			continue
+		}
+		a.logger.Info("pruning stale WG interface", "interface", name)
+		if out, err := exec.Command("ip", "link", "del", name).CombinedOutput(); err != nil {
+			a.logger.Warn("failed to delete stale WG interface",
+				"interface", name, "error", err, "output", string(out))
+		}
+	}
+	a.writeManagedIfaces(desired)
+}
+
+// readManagedIfaces returns the interface names recorded in the state file.
+// A missing or unparseable file yields nil (treated as "nothing managed yet").
+func (a *Applier) readManagedIfaces() []string {
+	data, err := os.ReadFile(a.stateFile)
+	if err != nil {
+		return nil
+	}
+	var st managedIfaceState
+	if err := json.Unmarshal(data, &st); err != nil {
+		a.logger.Warn("ignoring corrupt managed-interface state",
+			"file", a.stateFile, "error", err)
+		return nil
+	}
+	return st.Interfaces
+}
+
+// writeManagedIfaces atomically records the current desired interface set.
+func (a *Applier) writeManagedIfaces(desired map[string]bool) {
+	names := make([]string, 0, len(desired))
+	for n := range desired {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	data, err := json.Marshal(managedIfaceState{Interfaces: names})
+	if err != nil {
+		a.logger.Warn("failed to marshal managed-interface state", "error", err)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(a.stateFile), 0o755); err != nil {
+		a.logger.Warn("failed to create state dir for managed interfaces", "error", err)
+		return
+	}
+	if err := atomicWriteFile(a.stateFile, data, 0o644); err != nil {
+		a.logger.Warn("failed to write managed-interface state", "error", err)
+	}
 }
 
 // ensureWGInterface creates a WireGuard interface if it doesn't exist and
@@ -569,4 +659,3 @@ func (a *Applier) applyBIRD(configDir string) error {
 	}
 	return nil
 }
-
