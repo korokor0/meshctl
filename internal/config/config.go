@@ -138,6 +138,15 @@ type Node struct {
 	// endpoints on the underlay network, with krt_prefsrc to pin the
 	// source address. The agent auto-detects the default gateway at runtime.
 	Underlay *UnderlayConfig `yaml:"underlay"`
+
+	// WGIfaceOverride maps a peer node name to the local WireGuard interface
+	// name to use for the link toward that peer, overriding the derived
+	// <wg_iface_prefix><peer> name. Use this to reuse a pre-existing WG
+	// interface — e.g. on a RouterOS device where the interface was created
+	// manually, or to match an interface name your platform already assigned.
+	// The override is purely local to this node; the peer's own interface
+	// name is unaffected (WireGuard interface names are local).
+	WGIfaceOverride map[string]string `yaml:"wg_iface_override"`
 }
 
 // EndpointDef describes how to reach a node on the underlay network.
@@ -199,6 +208,19 @@ func (n *Node) EffectiveCostMode() CostMode {
 		return CostModeStatic
 	}
 	return CostModeProbe
+}
+
+// IfaceOverrideFor returns the configured WireGuard interface-name override
+// for the link toward peerName, and whether one is set.
+func (n *Node) IfaceOverrideFor(peerName string) (string, bool) {
+	if n.WGIfaceOverride == nil {
+		return "", false
+	}
+	name, ok := n.WGIfaceOverride[peerName]
+	if !ok || name == "" {
+		return "", false
+	}
+	return name, true
 }
 
 // EffectiveStaticCost returns the static cost if set, or 0 and false if unset.
@@ -363,6 +385,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 	if err := c.validatePeerRefs(); err != nil {
+		return err
+	}
+	if err := c.validateIfaceOverrides(); err != nil {
 		return err
 	}
 	return nil
@@ -624,6 +649,58 @@ func (c *Config) validatePeerRefs() error {
 		}
 	}
 	return nil
+}
+
+// validateIfaceOverrides checks that wg_iface_override entries reference
+// existing nodes (not self) and produce valid interface names.
+func (c *Config) validateIfaceOverrides() error {
+	names := make(map[string]bool)
+	for _, n := range c.Nodes {
+		names[n.Name] = true
+	}
+	for _, n := range c.Nodes {
+		for peer, iface := range n.WGIfaceOverride {
+			if peer == n.Name {
+				return fmt.Errorf("node %s: wg_iface_override cannot reference self", n.Name)
+			}
+			if !names[peer] {
+				return fmt.Errorf("node %s: wg_iface_override references unknown node %q", n.Name, peer)
+			}
+			if !isValidIfaceName(iface) {
+				return fmt.Errorf("node %s: wg_iface_override[%s] = %q is not a valid interface name (1-15 chars; must start with a letter or digit; letters, digits, '-', '_', '.')", n.Name, peer, iface)
+			}
+		}
+	}
+	return nil
+}
+
+// isValidIfaceName reports whether s is a usable network interface name:
+// 1-15 characters (Linux IFNAMSIZ), starting with an alphanumeric character
+// and containing only letters, digits, '-', '_', '.'. The leading-character
+// rule matters: the agent passes interface names to `ip`/`wg` as argv (e.g.
+// `ip link add <name> ...`), so a name beginning with '-' would be parsed as
+// a flag and break apply. Requiring an alphanumeric first character also
+// rejects "." and "..".
+func isValidIfaceName(s string) bool {
+	if len(s) == 0 || len(s) > 15 {
+		return false
+	}
+	first := s[0]
+	if !((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '-' || c == '_' || c == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // NodeByName returns the node with the given name, or nil.

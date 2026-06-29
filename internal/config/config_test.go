@@ -243,6 +243,82 @@ nodes:
     wg_peer_port: 60001
 `,
 		},
+		{
+			name: "wg_iface_override unknown node",
+			yaml: `
+global:
+
+nodes:
+  - name: a
+    type: linux
+    endpoint:
+      ipv4: "1.2.3.4"
+    loopback: 10.0.0.1
+    pubkey: "k="
+    wg_iface_override:
+      nonexistent: wg0
+`,
+		},
+		{
+			name: "wg_iface_override self",
+			yaml: `
+global:
+
+nodes:
+  - name: a
+    type: linux
+    endpoint:
+      ipv4: "1.2.3.4"
+    loopback: 10.0.0.1
+    pubkey: "k="
+    wg_iface_override:
+      a: wg0
+`,
+		},
+		{
+			name: "wg_iface_override invalid name",
+			yaml: `
+global:
+
+nodes:
+  - name: a
+    type: linux
+    endpoint:
+      ipv4: "1.2.3.4"
+    loopback: 10.0.0.1
+    pubkey: "k1="
+  - name: b
+    type: linux
+    endpoint:
+      ipv4: "1.2.3.5"
+    loopback: 10.0.0.2
+    pubkey: "k2="
+    wg_iface_override:
+      a: "this-name-is-way-too-long"
+`,
+		},
+		{
+			name: "wg_iface_override leading dash",
+			yaml: `
+global:
+
+nodes:
+  - name: a
+    type: linux
+    endpoint:
+      ipv4: "1.2.3.4"
+    loopback: 10.0.0.1
+    pubkey: "k1="
+  - name: b
+    type: linux
+    endpoint:
+      ipv4: "1.2.3.5"
+    loopback: 10.0.0.2
+    pubkey: "k2="
+    wg_iface_override:
+      a: "-wg0"
+`,
+		},
 	}
 
 	for _, tt := range tests {
