@@ -13,21 +13,22 @@ import (
 
 // WGPeerConfig holds the WireGuard peer parameters for a single tunnel.
 type WGPeerConfig struct {
-	Name         string // peer node name
-	PublicKey    string
-	Endpoint     string // host:port (uses peer's port for this specific interface)
-	AllowedIPs   []string
-	KeepAlive    int
-	ListenPort   int    // local listen port for this peer's interface
-	InterfaceIP  string // local V4LL address (e.g. "169.254.0.4"), always set
-	PeerIP       string // remote V4LL address (e.g. "169.254.0.2"), always set
-	Fe80IP       string // local fe80 address (e.g. "fe80::127:4"), always set
-	PeerFe80IP   string // peer's fe80 address (e.g. "fe80::127:3"), for probing
-	LinkMode     mesh.LinkMode
-	PeerType         config.NodeType  // type of the peer node
-	CostMode         config.CostMode  // how the fat node determines cost for this peer
-	StaticCost       *uint32          // fixed cost (when cost_mode=static, or fallback)
-	BandwidthPenalty uint32           // additive OSPF cost for low-bandwidth links
+	Name             string // peer node name
+	Interface        string // local WG interface name toward this peer (override-aware)
+	PublicKey        string
+	Endpoint         string // host:port (uses peer's port for this specific interface)
+	AllowedIPs       []string
+	KeepAlive        int
+	ListenPort       int    // local listen port for this peer's interface
+	InterfaceIP      string // local V4LL address (e.g. "169.254.0.4"), always set
+	PeerIP           string // remote V4LL address (e.g. "169.254.0.2"), always set
+	Fe80IP           string // local fe80 address (e.g. "fe80::127:4"), always set
+	PeerFe80IP       string // peer's fe80 address (e.g. "fe80::127:3"), for probing
+	LinkMode         mesh.LinkMode
+	PeerType         config.NodeType // type of the peer node
+	CostMode         config.CostMode // how the fat node determines cost for this peer
+	StaticCost       *uint32         // fixed cost (when cost_mode=static, or fallback)
+	BandwidthPenalty uint32          // additive OSPF cost for low-bandwidth links
 }
 
 // ConfigGenerator produces platform-specific config files.
@@ -95,12 +96,37 @@ func CheckInterfaceNameCollisions(cfg *config.Config, links []mesh.Link) error {
 		seen := make(map[string]string) // iface name → peer name
 		for _, l := range nodeLinks {
 			peer := l.PeerName(node.Name)
-			iface := WGInterfaceName(cfg.Global.WGIfacePrefix, peer)
+			iface := IfaceNameForPeer(cfg.Global.WGIfacePrefix, &node, peer)
 			if prev, ok := seen[iface]; ok {
 				return fmt.Errorf("node %s: interface name collision: peers %q and %q both produce interface %q (name truncated to 15 chars)",
 					node.Name, prev, peer, iface)
 			}
 			seen[iface] = peer
+		}
+	}
+	return nil
+}
+
+// CheckIfaceOverrides validates that every wg_iface_override entry targets a
+// node this node actually links to. config.Validate only checks that the key
+// is an existing node (it has no link information — that would create an
+// import cycle with the mesh package), so a typo to a real-but-non-adjacent
+// node passes there. Such a dangling override is silently inert: OSPF and
+// WireGuard are generated against the derived name instead of the operator's
+// intended interface, with no error shown. This catches it at generate/validate.
+func CheckIfaceOverrides(cfg *config.Config, links []mesh.Link) error {
+	for _, node := range cfg.Nodes {
+		if len(node.WGIfaceOverride) == 0 {
+			continue
+		}
+		peers := make(map[string]bool)
+		for _, l := range mesh.LinksForNode(links, node.Name) {
+			peers[l.PeerName(node.Name)] = true
+		}
+		for peer := range node.WGIfaceOverride {
+			if !peers[peer] {
+				return fmt.Errorf("node %s: wg_iface_override targets %q, which is not a peer of this node", node.Name, peer)
+			}
 		}
 	}
 	return nil
@@ -138,7 +164,8 @@ func BuildWGPeers(cfg *config.Config, nodeName string, links []mesh.Link) []WGPe
 
 		peer := WGPeerConfig{
 			Name:             peerName,
-			PublicKey:         peerNode.PubKey,
+			Interface:        IfaceNameForPeer(cfg.Global.WGIfacePrefix, localNode, peerName),
+			PublicKey:        peerNode.PubKey,
 			Endpoint:         peerNode.EndpointForPort(localNode, remotePort),
 			AllowedIPs:       []string{"0.0.0.0/0", "::/0"},
 			KeepAlive:        cfg.Global.WGKeepAlive,

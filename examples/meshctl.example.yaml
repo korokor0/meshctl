@@ -75,6 +75,14 @@ nodes:
     # Avoids port shifts when new nodes join. E.g. wg_peer_port: 60001 means
     # every peer's igp-hk-edge interface listens on port 60001.
     # wg_peer_port: 60001
+    # wg_iface_override: reuse a local interface name instead of the derived
+    # igp-<peer> name. Keyed by PEER name; purely local to THIS node (the
+    # peer's own interface name is unaffected). Useful to bind meshctl's OSPF
+    # to a WireGuard interface you created manually — e.g. on a firewalled
+    # RouterOS where you configured WG by hand. The override must target an
+    # actual peer of this node. Names: 1-15 chars, start with a letter/digit.
+    # wg_iface_override:
+    #   hk-core: wireguard1
     cost_mode: static
     static_cost: 150
 

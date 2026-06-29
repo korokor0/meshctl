@@ -21,18 +21,19 @@ type BIRDGenerator struct {
 }
 
 // NewBIRDGenerator creates a BIRD config generator.
+// Interface names are resolved once in BuildWGPeers (override-aware) and
+// looked up in templates via the peerIface map — see buildData.
 func NewBIRDGenerator(cfg *config.Config) (*BIRDGenerator, error) {
-	prefix := cfg.Global.WGIfacePrefix
 	tmpl, err := template.New("").Funcs(template.FuncMap{
-		"ifaceName": func(peerName string) string {
-			return WGInterfaceName(prefix, peerName)
-		},
 		"derefUint32": func(p *uint32) uint32 { return *p },
 		"peerCost": func(costs map[string]uint32, peer string) uint32 {
 			if c, ok := costs[peer]; ok {
 				return c
 			}
 			return defaultDynamicCost
+		},
+		"peerIface": func(ifaces map[string]string, peer string) string {
+			return ifaces[peer]
 		},
 	}).ParseFS(templateFS, "templates/*.tmpl")
 	if err != nil {
@@ -59,6 +60,7 @@ type birdData struct {
 	Fe80Links       []mesh.Link
 	V4LLLinks       []mesh.Link
 	PeerCosts       map[string]uint32 // peer name → initial OSPF cost
+	PeerIfaces      map[string]string // peer name → local interface name (override-aware)
 	UnderlayRoutes4 []UnderlayRoute   // IPv4 underlay static routes
 	UnderlayRoutes6 []UnderlayRoute   // IPv6 underlay static routes
 }
@@ -176,9 +178,11 @@ func (g *BIRDGenerator) buildData(node *config.Node, peers []WGPeerConfig, links
 		}
 	}
 
-	// Build per-peer initial cost map.
+	// Build per-peer initial cost and interface-name maps.
 	peerCosts := make(map[string]uint32)
+	peerIfaces := make(map[string]string)
 	for _, p := range peers {
+		peerIfaces[p.Name] = p.Interface
 		if p.CostMode == config.CostModeStatic && p.StaticCost != nil {
 			peerCosts[p.Name] = *p.StaticCost
 		} else if p.StaticCost != nil {
@@ -225,9 +229,22 @@ func (g *BIRDGenerator) buildData(node *config.Node, peers []WGPeerConfig, links
 		Fe80Links:       fe80,
 		V4LLLinks:       v4ll,
 		PeerCosts:       peerCosts,
+		PeerIfaces:      peerIfaces,
 		UnderlayRoutes4: ur4,
 		UnderlayRoutes6: ur6,
 	}
+}
+
+// IfaceNameForPeer returns the WireGuard interface name that owner uses for
+// the link toward peerName. It honors owner's per-peer wg_iface_override
+// before falling back to the derived <prefix><peer> name.
+func IfaceNameForPeer(prefix string, owner *config.Node, peerName string) string {
+	if owner != nil {
+		if name, ok := owner.IfaceOverrideFor(peerName); ok {
+			return name
+		}
+	}
+	return WGInterfaceName(prefix, peerName)
 }
 
 // WGInterfaceName returns the WireGuard interface name for a peer.

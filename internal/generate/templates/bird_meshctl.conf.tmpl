@@ -21,7 +21,7 @@ protocol ospf v3 meshctl_ospf3_v4 {
     instance id 64;
     area {{ .Global.OSPFArea }} {
         {{- range .Fe80Links }}
-        interface "{{ ifaceName (.PeerName $.Node.Name) }}" {
+        interface "{{ peerIface $.PeerIfaces (.PeerName $.Node.Name) }}" {
             type pointopoint;
             hello {{ $.Global.OSPFHello }};
             dead {{ $.Global.OSPFDead }};
@@ -40,7 +40,7 @@ protocol ospf v3 meshctl_ospf3_v6 {
     };
     area {{ .Global.OSPFArea }} {
         {{- range .Fe80Links }}
-        interface "{{ ifaceName (.PeerName $.Node.Name) }}" {
+        interface "{{ peerIface $.PeerIfaces (.PeerName $.Node.Name) }}" {
             type pointopoint;
             hello {{ $.Global.OSPFHello }};
             dead {{ $.Global.OSPFDead }};
@@ -61,7 +61,7 @@ protocol ospf v2 meshctl_ospf2 {
     };
     area {{ .Global.OSPFArea }} {
         {{- range .V4LLLinks }}
-        interface "{{ ifaceName (.PeerName $.Node.Name) }}" {
+        interface "{{ peerIface $.PeerIfaces (.PeerName $.Node.Name) }}" {
             type pointopoint;
             hello {{ $.Global.OSPFHello }};
             dead {{ $.Global.OSPFDead }};

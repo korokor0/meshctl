@@ -27,7 +27,7 @@ func (g *StaticSnippetGenerator) GenerateWireguard(node *config.Node, peers []WG
 	fmt.Fprintf(&buf, "# Adapt this to your platform's WireGuard configuration format.\n\n")
 
 	for _, p := range peers {
-		iface := WGInterfaceName(g.cfg.Global.WGIfacePrefix,p.Name)
+		iface := p.Interface
 		fmt.Fprintf(&buf, "## Interface: %s (peer: %s)\n", iface, p.Name)
 		fmt.Fprintf(&buf, "# PublicKey  = %s\n", p.PublicKey)
 		if p.Endpoint != "" {
@@ -63,7 +63,7 @@ func (g *StaticSnippetGenerator) GenerateOSPF(node *config.Node, links []mesh.Li
 
 	for _, l := range nodeLinks {
 		peerName := l.PeerName(node.Name)
-		iface := WGInterfaceName(g.cfg.Global.WGIfacePrefix,peerName)
+		iface := IfaceNameForPeer(g.cfg.Global.WGIfacePrefix, node, peerName)
 		fmt.Fprintf(&buf, "# Interface %s → peer %s\n", iface, peerName)
 		if l.Mode == mesh.LinkModeV4LL {
 			selfAddr := l.SelfAddr(node.Name)

@@ -16,7 +16,7 @@
       "allowed_ips": [{{ range $j, $ip := $p.AllowedIPs }}{{ if $j }}, {{ end }}"{{ $ip }}"{{ end }}],
       "persistent_keepalive": {{ $p.KeepAlive }},
       "listen_port": {{ $p.ListenPort }},
-      "interface": "{{ ifaceName $p.Name }}",
+      "interface": "{{ $p.Interface }}",
       "peer_type": "{{ $p.PeerType }}",
       "cost_mode": "{{ $p.CostMode }}"
       {{- if $p.Fe80IP }},

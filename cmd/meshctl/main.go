@@ -53,6 +53,9 @@ func generateCmd() *cobra.Command {
 			if err := generate.CheckInterfaceNameCollisions(cfg, links); err != nil {
 				return err
 			}
+			if err := generate.CheckIfaceOverrides(cfg, links); err != nil {
+				return err
+			}
 
 			outputDir := cfg.Global.OutputDir
 
@@ -178,6 +181,9 @@ func validateCmd() *cobra.Command {
 				return fmt.Errorf("link validation: %w", err)
 			}
 			if err := generate.CheckInterfaceNameCollisions(cfg, links); err != nil {
+				return err
+			}
+			if err := generate.CheckIfaceOverrides(cfg, links); err != nil {
 				return err
 			}
 			fmt.Println("configuration is valid")
@@ -382,7 +388,7 @@ func showMeshCmd() *cobra.Command {
 				var ifaces []string
 				for _, l := range nodeLinks {
 					peer := l.PeerName(n.Name)
-					iface := generate.WGInterfaceName(cfg.Global.WGIfacePrefix, peer)
+					iface := generate.IfaceNameForPeer(cfg.Global.WGIfacePrefix, &n, peer)
 					port := generate.PeerPort(cfg, n.Name, peer, links)
 					ifaces = append(ifaces, fmt.Sprintf("%s:%d", iface, port))
 				}

@@ -10,7 +10,7 @@ import (
 
 // RouterOSGenerator produces .rsc scripts for MikroTik RouterOS devices.
 type RouterOSGenerator struct {
-	cfg       *config.Config
+	cfg *config.Config
 }
 
 // NewRouterOSGenerator creates a RouterOS config generator.
@@ -27,7 +27,7 @@ func (g *RouterOSGenerator) GenerateWireguard(node *config.Node, peers []WGPeerC
 
 	// Create WireGuard interface if it doesn't exist.
 	for _, p := range peers {
-		iface := WGInterfaceName(g.cfg.Global.WGIfacePrefix, p.Name)
+		iface := p.Interface
 		fmt.Fprintf(&buf, ":if ([:len [/interface/wireguard/find name=\"%s\"]] = 0) do={\n", iface)
 		fmt.Fprintf(&buf, "  /interface/wireguard/add name=\"%s\" listen-port=%d mtu=1420\n", iface, p.ListenPort)
 		fmt.Fprintf(&buf, "}\n\n")
@@ -35,7 +35,7 @@ func (g *RouterOSGenerator) GenerateWireguard(node *config.Node, peers []WGPeerC
 
 	// Add/update peers.
 	for _, p := range peers {
-		iface := WGInterfaceName(g.cfg.Global.WGIfacePrefix,p.Name)
+		iface := p.Interface
 		fmt.Fprintf(&buf, "# Peer: %s\n", p.Name)
 		fmt.Fprintf(&buf, ":if ([:len [/interface/wireguard/peers/find interface=\"%s\" public-key=\"%s\"]] = 0) do={\n",
 			iface, p.PublicKey)
@@ -66,7 +66,7 @@ func (g *RouterOSGenerator) GenerateOSPF(node *config.Node, links []mesh.Link) (
 
 	for _, l := range nodeLinks {
 		peerName := l.PeerName(node.Name)
-		iface := WGInterfaceName(g.cfg.Global.WGIfacePrefix,peerName)
+		iface := IfaceNameForPeer(g.cfg.Global.WGIfacePrefix, node, peerName)
 
 		// RouterOS only uses OSPFv2 (V4LL mode).
 		selfAddr := l.SelfAddr(node.Name)

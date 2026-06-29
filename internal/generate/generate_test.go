@@ -187,7 +187,7 @@ func TestWGInterfaceName(t *testing.T) {
 		{"igp-", "very-long-peer-name", "igp-verylongpee"}, // strip symbols, then truncate
 		{"wg-", "HKG", "wg-hkg"},                           // uppercase → lowercase
 		{"igp-", "NYC", "igp-nyc"},
-		{"igp-", "kskb,TW", "igp-kskb,tw"},                 // short enough, keep symbols
+		{"igp-", "kskb,TW", "igp-kskb,tw"},                   // short enough, keep symbols
 		{"igp-", "a.b,c-d_e.f,long-name", "igp-abcdeflongn"}, // strip symbols, then truncate
 	}
 	for _, tt := range tests {
@@ -195,5 +195,112 @@ func TestWGInterfaceName(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("WGInterfaceName(%q, %q) = %q, want %q", tt.prefix, tt.peer, got, tt.want)
 		}
+	}
+}
+
+func TestIfaceNameForPeer_Override(t *testing.T) {
+	owner := &config.Node{
+		Name:            "hk-edge",
+		WGIfaceOverride: map[string]string{"hk-core": "wg-existing0"},
+	}
+	// Overridden peer uses the configured name.
+	if got := IfaceNameForPeer("igp-", owner, "hk-core"); got != "wg-existing0" {
+		t.Errorf("override: got %q, want %q", got, "wg-existing0")
+	}
+	// Non-overridden peer falls back to the derived name.
+	if got := IfaceNameForPeer("igp-", owner, "jp-relay"); got != "igp-jp-relay" {
+		t.Errorf("fallback: got %q, want %q", got, "igp-jp-relay")
+	}
+	// Nil owner falls back to the derived name.
+	if got := IfaceNameForPeer("igp-", nil, "hk-core"); got != "igp-hk-core" {
+		t.Errorf("nil owner: got %q, want %q", got, "igp-hk-core")
+	}
+}
+
+// TestWGIfaceOverride_BIRD verifies that a per-peer interface override on a
+// fat node flows into both the BIRD OSPF config and the agent's wireguard.json.
+func TestWGIfaceOverride_BIRD(t *testing.T) {
+	cfg := testCfg()
+	// hk-core reuses an existing interface for its link to hk-edge.
+	cfg.NodeByName("hk-core").WGIfaceOverride = map[string]string{"hk-edge": "wg-edge0"}
+
+	links, _ := mesh.ComputeLinks(cfg)
+	mesh.AssignAddresses(links, cfg)
+
+	gen, err := NewBIRDGenerator(cfg)
+	if err != nil {
+		t.Fatalf("new generator: %v", err)
+	}
+	node := cfg.NodeByName("hk-core")
+
+	ospf, err := gen.GenerateOSPF(node, links)
+	if err != nil {
+		t.Fatalf("generate OSPF: %v", err)
+	}
+	if s := string(ospf); !strings.Contains(s, `interface "wg-edge0"`) {
+		t.Errorf("BIRD OSPF missing overridden interface name; got:\n%s", s)
+	} else if strings.Contains(s, `interface "igp-hk-edge"`) {
+		t.Error("BIRD OSPF still uses derived name for overridden link")
+	}
+
+	peers := BuildWGPeers(cfg, "hk-core", links)
+	wg, err := gen.GenerateWireguard(node, peers)
+	if err != nil {
+		t.Fatalf("generate WG: %v", err)
+	}
+	if s := string(wg); !strings.Contains(s, `"interface": "wg-edge0"`) {
+		t.Errorf("wireguard.json missing overridden interface name; got:\n%s", s)
+	}
+	// The non-overridden peer (jp-relay) keeps its derived name.
+	if s := string(wg); !strings.Contains(s, `"interface": "igp-jp-relay"`) {
+		t.Error("wireguard.json lost derived name for non-overridden peer")
+	}
+}
+
+// TestCheckIfaceOverrides verifies that an override targeting an actual peer
+// passes, while one targeting a real-but-non-adjacent node is rejected.
+func TestCheckIfaceOverrides(t *testing.T) {
+	cfg := testCfg()
+	links, _ := mesh.ComputeLinks(cfg)
+	mesh.AssignAddresses(links, cfg)
+
+	// Valid: hk-edge actually peers with hk-core.
+	cfg.NodeByName("hk-edge").WGIfaceOverride = map[string]string{"hk-core": "wireguard1"}
+	if err := CheckIfaceOverrides(cfg, links); err != nil {
+		t.Errorf("override to a real peer should pass, got: %v", err)
+	}
+
+	// Invalid: friend-node only peers_with hk-core and jp-relay, so it is not
+	// a peer of hk-edge — the override is a silent no-op without this check.
+	cfg.NodeByName("hk-edge").WGIfaceOverride = map[string]string{"friend-node": "wireguard1"}
+	if err := CheckIfaceOverrides(cfg, links); err == nil {
+		t.Error("override to a non-peer node should be rejected")
+	}
+}
+
+// TestWGIfaceOverride_RouterOS verifies the override flows into .rsc output,
+// so a manually-created RouterOS interface can be reused.
+func TestWGIfaceOverride_RouterOS(t *testing.T) {
+	cfg := testCfg()
+	// hk-edge (RouterOS) reuses its existing interface for the link to hk-core.
+	cfg.NodeByName("hk-edge").WGIfaceOverride = map[string]string{"hk-core": "wireguard1"}
+
+	links, _ := mesh.ComputeLinks(cfg)
+	mesh.AssignAddresses(links, cfg)
+
+	gen := NewRouterOSGenerator(cfg)
+	node := cfg.NodeByName("hk-edge")
+	peers := BuildWGPeers(cfg, "hk-edge", links)
+
+	out, err := gen.GenerateFull(node, peers, links)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	s := string(out)
+	if !strings.Contains(s, `name="wireguard1"`) {
+		t.Errorf(".rsc missing overridden interface name; got:\n%s", s)
+	}
+	if strings.Contains(s, `name="igp-hk-core"`) {
+		t.Error(".rsc still uses derived name for overridden link")
 	}
 }
